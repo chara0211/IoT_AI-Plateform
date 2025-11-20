@@ -1,0 +1,42 @@
+
+ML MODEL TRAINING REPORT
+================================================================================
+
+Model: Isolation Forest
+Training Date: 2025-11-14 16:47:55
+
+Dataset Information:
+  - Training samples (normal only): 6,358
+  - Test samples: 2,000
+  - Features: 13
+  - Contamination parameter: 0.21
+
+Model Performance:
+  - Accuracy:  75.45%
+  - Precision: 43.37%
+  - Recall:    64.63%
+  - F1-Score:  51.91%
+
+Confusion Matrix:
+  - True Negatives:  1,244
+  - False Positives: 346 (21.76%)
+  - False Negatives: 145 (35.37%)
+  - True Positives:  265
+
+Verdict:
+  FAIR! Consider feature engineering or more data.
+  High false positives - may need threshold tuning.
+
+Models Saved:
+  - models/isolation_forest.pkl (main model)
+  - models/kmeans.pkl (clustering support)
+  - models/scaler.pkl (feature scaling)
+  - models/metrics.pkl (performance metrics)
+
+Next Steps:
+  1. Build FastAPI ML service
+  2. Test with real-time data
+  3. Deploy to production
+  4. Monitor performance
+
+================================================================================
