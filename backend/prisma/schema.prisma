@@ -1,0 +1,38 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Detection {
+  id                 Int       @id @default(autoincrement())
+
+  // depuis l'IA
+  deviceId           String            // device_id
+  deviceType         String?           // tu peux le passer depuis le payload
+
+  isAnomaly          Boolean           // is_anomaly
+  confidenceScore    Float             // confidence_score
+  riskScore          Int               // risk_score
+  threatType         String            // threat_type (exact texte renvoyé)
+  threatSeverity     String            // threat_severity (ex: "CRITICAL", "INFO")
+  explanation        String            // explanation
+  modelVotes         Json              // model_votes (JSON)
+  recommendedActions Json?          // Change from Json? to String[]
+
+  // pour garder une trace complète de ce qui a été envoyé au moteur
+  rawTelemetry       Json?             // payload original (CPU, réseau, etc.)
+
+  createdAt          DateTime @default(now())
+
+  @@index([deviceId, createdAt])
+  @@index([threatSeverity, createdAt])
+}

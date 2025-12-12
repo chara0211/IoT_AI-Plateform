@@ -1,0 +1,146 @@
+{
+  "network_summary": {
+    "total_devices": 85,
+    "total_connections": 40,
+    "health_score": 58.35,
+    "isolated_devices": [
+      "sensor_17",
+      "thermostat_32",
+      "thermostat_9",
+      "sensor_43",
+      "smart_light_30",
+      "thermostat_25",
+      "smart_light_37",
+      "camera_18",
+      "thermostat_28",
+      "thermostat_34",
+      "sensor_24",
+      "smart_light_10",
+      "smart_light_13",
+      "thermostat_6",
+      "thermostat_38",
+      "sensor_37",
+      "sensor_4",
+      "sensor_26",
+      "sensor_31",
+      "sensor_2",
+      "thermostat_43",
+      "sensor_33",
+      "thermostat_19",
+      "sensor_39",
+      "sensor_49",
+      "smart_light_49",
+      "smart_light_17",
+      "sensor_15",
+      "smart_light_36",
+      "thermostat_50",
+      "thermostat_22",
+      "sensor_5",
+      "sensor_22",
+      "sensor_23",
+      "smart_light_8",
+      "smart_light_26",
+      "thermostat_1",
+      "smart_light_43",
+      "thermostat_40",
+      "smart_light_23",
+      "smart_light_29",
+      "camera_7",
+      "sensor_16",
+      "smart_light_41",
+      "sensor_27",
+      "camera_1",
+      "thermostat_11",
+      "smart_light_21",
+      "sensor_10",
+      "thermostat_44",
+      "smart_light_9",
+      "sensor_40",
+      "camera_13",
+      "sensor_1",
+      "camera_32",
+      "smart_light_3",
+      "thermostat_16",
+      "smart_light_14",
+      "sensor_29",
+      "smart_light_12",
+      "camera_16",
+      "smart_light_46",
+      "camera_38"
+    ]
+  },
+  "botnet_analysis": {
+    "botnet_detected": false,
+    "c2_candidates": [],
+    "recruited_devices": [],
+    "confidence": 0.0
+  },
+  "lateral_movement": {
+    "lateral_movement_detected": true,
+    "attack_paths": [
+      {
+        "path": [
+          "camera_6",
+          "thermostat_4"
+        ],
+        "length": 2,
+        "entry_point": "camera_6",
+        "final_target": "thermostat_4"
+      },
+      {
+        "path": [
+          "smart_light_10",
+          "smart_light_36"
+        ],
+        "length": 2,
+        "entry_point": "smart_light_10",
+        "final_target": "smart_light_36"
+      },
+      {
+        "path": [
+          "thermostat_4",
+          "camera_6"
+        ],
+        "length": 2,
+        "entry_point": "thermostat_4",
+        "final_target": "camera_6"
+      }
+    ],
+    "entry_point": "camera_6",
+    "compromised_devices": [
+      "smart_light_36",
+      "camera_6",
+      "smart_light_10",
+      "thermostat_4"
+    ]
+  },
+  "coordinated_attack": {
+    "coordinated_attack": true,
+    "attack_wave": 21,
+    "affected_devices": [
+      "camera_6",
+      "camera_18",
+      "smart_light_10",
+      "sensor_39",
+      "smart_light_49",
+      "smart_light_17",
+      "sensor_15",
+      "smart_light_36",
+      "smart_light_26",
+      "camera_14",
+      "camera_15",
+      "camera_7",
+      "sensor_46",
+      "camera_1",
+      "thermostat_11",
+      "sensor_10",
+      "thermostat_4",
+      "camera_13",
+      "thermostat_16",
+      "sensor_44",
+      "smart_light_14"
+    ],
+    "attack_start_time": null
+  },
+  "critical_devices": []
+}
