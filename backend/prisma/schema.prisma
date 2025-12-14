@@ -13,26 +13,29 @@ datasource db {
 }
 
 model Detection {
-  id                 Int       @id @default(autoincrement())
+  id                 Int      @id @default(autoincrement())
 
-  // depuis l'IA
-  deviceId           String            // device_id
-  deviceType         String?           // tu peux le passer depuis le payload
+  deviceId           String
+  deviceType         String?
 
-  isAnomaly          Boolean           // is_anomaly
-  confidenceScore    Float             // confidence_score
-  riskScore          Int               // risk_score
-  threatType         String            // threat_type (exact texte renvoyé)
-  threatSeverity     String            // threat_severity (ex: "CRITICAL", "INFO")
-  explanation        String            // explanation
-  modelVotes         Json              // model_votes (JSON)
-  recommendedActions Json?          // Change from Json? to String[]
+  isAnomaly          Boolean
+  confidenceScore    Float
+  riskScore          Int
+  threatType         String
+  threatSeverity     String
+  explanation        String
 
-  // pour garder une trace complète de ce qui a été envoyé au moteur
-  rawTelemetry       Json?             // payload original (CPU, réseau, etc.)
+  modelVotes         Json
+  recommendedActions Json?      // keep as Json (best with Prisma + Postgres)
+
+  rawTelemetry       Json?
 
   createdAt          DateTime @default(now())
 
+  //  indexes for your API queries
+  @@index([createdAt])
   @@index([deviceId, createdAt])
+  @@index([isAnomaly, createdAt])
   @@index([threatSeverity, createdAt])
 }
+

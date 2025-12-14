@@ -1,424 +1,732 @@
 """
-Network Behavior Graph Analysis
-Detects: Lateral movement, botnet recruitment, coordinated attacks
+Network Behavior Graph Analysis (Enhanced)
+- Builds a directed comm graph from telemetry + MQTT comm_target
+- Detects: Lateral movement, botnet recruitment, coordinated attacks
+- Exports: nodes + links usable by frontend (react-force-graph)
+- Visualizes: highlighted edges, node roles, traffic sizing
 """
 
-import pandas as pd
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple
+
 import numpy as np
+import pandas as pd
 import networkx as nx
 import matplotlib.pyplot as plt
-from datetime import datetime, timedelta
-from typing import Dict, List, Tuple
-import json
+
+
+# -----------------------------
+# Helpers
+# -----------------------------
+
+def _to_dt(x):
+    try:
+        return pd.to_datetime(x, utc=True, errors="coerce")
+    except Exception:
+        return pd.NaT
+
+
+def _is_anomalous_label(row: pd.Series) -> bool:
+    """
+    Accepts multiple conventions:
+    - label: "Normal" / "Anomaly"
+    - attack_label: "normal" / "dos" / "injection" / "spoofing"
+    - is_anomalous: True/False
+    - is_anomaly: True/False
+    """
+    if "is_anomalous" in row and pd.notna(row["is_anomalous"]):
+        return bool(row["is_anomalous"])
+    if "is_anomaly" in row and pd.notna(row["is_anomaly"]):
+        return bool(row["is_anomaly"])
+
+    lbl = str(row.get("label", "")).strip().lower()
+    if lbl in ("anomaly", "anomalous", "attack", "malicious"):
+        return True
+    if lbl in ("normal", "ok", "benign"):
+        return False
+
+    a = str(row.get("attack_label", "")).strip().lower()
+    if a and a != "normal":
+        return True
+
+    return False
+
+
+def _safe_num(x, default=0.0):
+    try:
+        if pd.isna(x):
+            return default
+        return float(x)
+    except Exception:
+        return default
+
+
+# -----------------------------
+# Enhanced Analyzer
+# -----------------------------
+
+@dataclass
+class EdgeAgg:
+    count: int = 0
+    total_packets: int = 0
+    total_out_kb: int = 0
+    total_in_kb: int = 0
+    last_seen: Optional[pd.Timestamp] = None
+    edge_type: str = "inferred"  # "explicit" | "inferred" | "c2" | "lateral"
+
 
 class NetworkGraphAnalyzer:
     """
-    Analyze device communication patterns using graph theory
+    Enhanced graph-based network behavior analyzer.
+
+    Key idea:
+    - If telemetry contains `comm_target`, we treat it as TRUE communication edge.
+    - Otherwise, we fall back to inference heuristics.
     """
-    
-    def __init__(self):
-        self.graph = nx.DiGraph()  # Directed graph for communication
-        self.device_profiles = {}
-        
+
+    def __init__(
+        self,
+        use_comm_target: bool = True,
+        inference_enabled: bool = True,
+        inference_time_window_sec: int = 30,
+        inference_threshold: float = 0.55,
+    ):
+        self.graph = nx.DiGraph()
+        self.edge_agg: Dict[Tuple[str, str], EdgeAgg] = {}
+
+        self.use_comm_target = use_comm_target
+        self.inference_enabled = inference_enabled
+        self.inference_time_window_sec = inference_time_window_sec
+        self.inference_threshold = inference_threshold
+
+    # -----------------------------
+    # Build graph
+    # -----------------------------
+
     def build_communication_graph(self, telemetry_data: pd.DataFrame) -> nx.DiGraph:
         """
-        Build graph from device telemetry
-        Nodes = Devices
-        Edges = Communications (weighted by packet volume)
+        Build a directed graph.
+        Nodes: devices
+        Edges: communications (explicit via comm_target OR inferred)
         """
+        df = telemetry_data.copy()
+
+        # Normalize timestamp
+        if "timestamp" not in df.columns:
+            df["timestamp"] = pd.Timestamp.now(tz="UTC")
+        df["timestamp"] = df["timestamp"].apply(_to_dt).fillna(pd.Timestamp.now(tz="UTC"))
+
+        # Create graph
         G = nx.DiGraph()
-        
-        # Add devices as nodes with attributes
-        for _, row in telemetry_data.iterrows():
-            device_id = row['device_id']
-            
-            if device_id not in G.nodes():
-                G.add_node(device_id, 
-                          device_type=row['device_type'],
-                          avg_cpu=row['cpu_usage'],
-                          avg_memory=row['memory_usage'],
-                          total_traffic=row['network_in_kb'] + row['network_out_kb'],
-                          is_anomalous=row['label'] != 'Normal')
-        
-        # Infer communications from network patterns
-        # Devices with high outbound traffic likely communicating
-        for idx1, row1 in telemetry_data.iterrows():
-            for idx2, row2 in telemetry_data.iterrows():
-                if idx1 != idx2:
-                    # Heuristic: if similar timing and network activity
-                    time_diff = abs((pd.to_datetime(row1['timestamp']) - 
-                                   pd.to_datetime(row2['timestamp'])).total_seconds())
-                    
-                    if time_diff < 60:  # Within 1 minute
-                        # Calculate communication score
-                        comm_score = self._calculate_communication_likelihood(row1, row2)
-                        
-                        if comm_score > 0.5:
-                            G.add_edge(row1['device_id'], 
-                                     row2['device_id'],
-                                     weight=comm_score,
-                                     packet_volume=row1['network_out_kb'])
-        
+
+        # Add nodes (aggregated attributes)
+        for _, row in df.iterrows():
+            device_id = str(row.get("device_id", "")).strip()
+            if not device_id:
+                continue
+
+            if device_id not in G.nodes:
+                G.add_node(
+                    device_id,
+                    device_type=str(row.get("device_type", "unknown")),
+                    is_anomalous=_is_anomalous_label(row),
+                    avg_cpu=_safe_num(row.get("cpu_usage", 0)),
+                    avg_memory=_safe_num(row.get("memory_usage", 0)),
+                    total_traffic=int(_safe_num(row.get("network_in_kb", 0)) + _safe_num(row.get("network_out_kb", 0))),
+                    last_seen=row["timestamp"],
+                )
+            else:
+                # update rolling averages + traffic
+                n = G.nodes[device_id]
+                n["is_anomalous"] = n["is_anomalous"] or _is_anomalous_label(row)
+                n["avg_cpu"] = (n["avg_cpu"] + _safe_num(row.get("cpu_usage", 0))) / 2.0
+                n["avg_memory"] = (n["avg_memory"] + _safe_num(row.get("memory_usage", 0))) / 2.0
+                n["total_traffic"] = int(n["total_traffic"] + _safe_num(row.get("network_in_kb", 0)) + _safe_num(row.get("network_out_kb", 0)))
+                n["last_seen"] = max(n.get("last_seen", row["timestamp"]), row["timestamp"])
+
+        # Add edges (explicit)
+        if self.use_comm_target and "comm_target" in df.columns:
+            for _, row in df.iterrows():
+                src = str(row.get("device_id", "")).strip()
+                dst = row.get("comm_target", None)
+                if dst is None:
+                    continue
+                dst = str(dst).strip()
+                if not src or not dst or src == dst:
+                    continue
+
+                if dst not in G.nodes:
+                    G.add_node(dst, device_type="unknown", is_anomalous=False, avg_cpu=0, avg_memory=0, total_traffic=0, last_seen=row["timestamp"])
+
+                self._add_or_update_edge(
+                    G,
+                    src,
+                    dst,
+                    row=row,
+                    edge_type="explicit",
+                    weight=1.0,
+                )
+
+        # Add edges (inferred heuristic fallback)
+        if self.inference_enabled:
+            # We only infer among records close in time
+            df_sorted = df.sort_values("timestamp")
+            rows = list(df_sorted.itertuples(index=False))
+            for i in range(len(rows)):
+                r1 = rows[i]
+                for j in range(i + 1, len(rows)):
+                    r2 = rows[j]
+                    dt = (r2.timestamp - r1.timestamp).total_seconds()
+                    if dt > self.inference_time_window_sec:
+                        break
+
+                    # infer both directions (could be chatty)
+                    s1 = getattr(r1, "device_id", None)
+                    s2 = getattr(r2, "device_id", None)
+                    if not s1 or not s2 or s1 == s2:
+                        continue
+
+                    score_12 = self._calculate_communication_likelihood(r1, r2)
+                    if score_12 >= self.inference_threshold:
+                        self._add_or_update_edge(G, str(s1), str(s2), row=r1._asdict(), edge_type="inferred", weight=score_12)
+
+                    score_21 = self._calculate_communication_likelihood(r2, r1)
+                    if score_21 >= self.inference_threshold:
+                        self._add_or_update_edge(G, str(s2), str(s1), row=r2._asdict(), edge_type="inferred", weight=score_21)
+
         self.graph = G
         return G
-    
-    def _calculate_communication_likelihood(self, device1: pd.Series, device2: pd.Series) -> float:
+
+    def _add_or_update_edge(self, G: nx.DiGraph, src: str, dst: str, row, edge_type: str, weight: float):
+        pkt = int(_safe_num(row.get("packet_rate", 0), 0))
+        out_kb = int(_safe_num(row.get("network_out_kb", 0), 0))
+        in_kb = int(_safe_num(row.get("network_in_kb", 0), 0))
+        ts = row.get("timestamp", None)
+        ts = _to_dt(ts) if ts is not None else pd.Timestamp.now(tz="UTC")
+
+        key = (src, dst)
+        agg = self.edge_agg.get(key, EdgeAgg(edge_type=edge_type))
+        agg.count += 1
+        agg.total_packets += pkt
+        agg.total_out_kb += out_kb
+        agg.total_in_kb += in_kb
+        agg.last_seen = ts if agg.last_seen is None else max(agg.last_seen, ts)
+        agg.edge_type = edge_type  # keep latest type if updated
+        self.edge_agg[key] = agg
+
+        # Graph edge attributes
+        if G.has_edge(src, dst):
+            e = G[src][dst]
+            e["weight"] = max(float(e.get("weight", 0.0)), float(weight))
+            e["count"] = agg.count
+            e["total_packets"] = agg.total_packets
+            e["total_out_kb"] = agg.total_out_kb
+            e["last_seen"] = agg.last_seen
+            e["type"] = agg.edge_type
+        else:
+            G.add_edge(
+                src,
+                dst,
+                weight=float(weight),
+                count=agg.count,
+                total_packets=agg.total_packets,
+                total_out_kb=agg.total_out_kb,
+                last_seen=agg.last_seen,
+                type=agg.edge_type,
+            )
+
+    def _calculate_communication_likelihood(self, device1, device2) -> float:
         """
-        Calculate likelihood that two devices are communicating
-        Based on network patterns and timing
+        Inference heuristic (kept, but improved):
+        - high outbound + other inbound
+        - plus similarity ratio
         """
-        # Network pattern similarity
-        net_out1 = device1['network_out_kb']
-        net_in2 = device2['network_in_kb']
-        
-        # High outbound from d1 and high inbound to d2 suggests communication
-        if net_out1 > 500 and net_in2 > 500:
-            similarity = min(net_out1, net_in2) / max(net_out1, net_in2)
-            return similarity
-        
-        return 0.0
-    
+        d1 = device1 if isinstance(device1, dict) else device1._asdict()
+        d2 = device2 if isinstance(device2, dict) else device2._asdict()
+
+        net_out1 = _safe_num(d1.get("network_out_kb", 0))
+        net_in2 = _safe_num(d2.get("network_in_kb", 0))
+
+        if net_out1 < 250 or net_in2 < 250:
+            return 0.0
+
+        similarity = min(net_out1, net_in2) / max(net_out1, net_in2)
+        # boost if high packet rates (chatty)
+        pkt1 = _safe_num(d1.get("packet_rate", 0))
+        pkt2 = _safe_num(d2.get("packet_rate", 0))
+        pkt_boost = min((pkt1 + pkt2) / 2000.0, 1.0)  # 0..1
+
+        return float(0.75 * similarity + 0.25 * pkt_boost)
+
+    # -----------------------------
+    # Detection
+    # -----------------------------
+
     def detect_botnet_patterns(self) -> Dict:
         """
-        Detect botnet command-and-control patterns
-        - Look for hub-and-spoke topology
-        - Central node with many outgoing connections
+        Botnet / C2 detection:
+        - hub-like nodes with high out-degree
+        - fanout ratio out/(in+1)
         """
         results = {
             "botnet_detected": False,
             "c2_candidates": [],
             "recruited_devices": [],
-            "confidence": 0.0
+            "confidence": 0.0,
         }
-        
-        if len(self.graph.nodes()) < 3:
+
+        if self.graph.number_of_nodes() < 4:
             return results
-        
-        # Calculate out-degree centrality (potential C&C servers)
+
         out_degree = dict(self.graph.out_degree())
         in_degree = dict(self.graph.in_degree())
-        
-        # C&C typically has high out-degree, low in-degree
-        for node in self.graph.nodes():
-            out = out_degree.get(node, 0)
+
+        N = self.graph.number_of_nodes()
+
+        for node in self.graph.nodes:
+            out_ = out_degree.get(node, 0)
             in_ = in_degree.get(node, 0)
-            
-            # Potential C&C: contacts many devices but receives few connections
-            if out >= 3 and (out / (in_ + 1)) > 2:
-                c2_score = out / len(self.graph.nodes())
-                
-                if c2_score > 0.3:  # More than 30% of network
-                    results["botnet_detected"] = True
-                    results["c2_candidates"].append({
+
+            # Candidate hub
+            if out_ >= max(3, int(0.25 * N)) and (out_ / (in_ + 1)) > 2.0:
+                c2_score = out_ / max(N, 1)
+                results["c2_candidates"].append(
+                    {
                         "device_id": node,
-                        "out_connections": out,
+                        "out_connections": out_,
                         "in_connections": in_,
-                        "c2_score": round(c2_score, 3)
-                    })
-                    
-                    # Find recruited devices
-                    recruited = list(self.graph.successors(node))
-                    results["recruited_devices"].extend(recruited)
-        
-        if results["botnet_detected"]:
+                        "c2_score": round(float(c2_score), 3),
+                    }
+                )
+
+        if results["c2_candidates"]:
+            results["botnet_detected"] = True
+            # recruited = union of successors
+            rec = set()
+            for c2 in results["c2_candidates"]:
+                for s in self.graph.successors(c2["device_id"]):
+                    rec.add(s)
+                    # label those edges as c2 for visualization export
+                    if self.graph.has_edge(c2["device_id"], s):
+                        self.graph[c2["device_id"]][s]["type"] = "c2"
+            results["recruited_devices"] = sorted(list(rec))
             results["confidence"] = 0.85
-        
+
         return results
-    
-    def detect_lateral_movement(self) -> Dict:
+
+    def detect_lateral_movement(self, cutoff: int = 4) -> Dict:
         """
-        Detect lateral movement patterns
-        - Sequential compromise of devices
-        - Path from external to internal devices
+        Lateral movement:
+        - find short paths among anomalous nodes
         """
         results = {
             "lateral_movement_detected": False,
             "attack_paths": [],
             "entry_point": None,
-            "compromised_devices": []
+            "compromised_devices": [],
         }
-        
-        # Find anomalous devices
-        anomalous_nodes = [n for n in self.graph.nodes() 
-                          if self.graph.nodes[n].get('is_anomalous', False)]
-        
-        if len(anomalous_nodes) < 2:
+
+        anomalous = [n for n in self.graph.nodes if self.graph.nodes[n].get("is_anomalous", False)]
+        if len(anomalous) < 2:
             return results
-        
-        # Find paths between anomalous devices
-        for source in anomalous_nodes:
-            for target in anomalous_nodes:
-                if source != target:
-                    try:
-                        paths = list(nx.all_simple_paths(self.graph, source, target, cutoff=4))
-                        
-                        for path in paths:
-                            if len(path) >= 2:  # At least 2 hops
-                                results["lateral_movement_detected"] = True
-                                results["attack_paths"].append({
-                                    "path": path,
-                                    "length": len(path),
-                                    "entry_point": path[0],
-                                    "final_target": path[-1]
-                                })
-                    except nx.NetworkXNoPath:
-                        continue
-        
-        if results["lateral_movement_detected"]:
-            # Identify most likely entry point
-            entry_points = [p["entry_point"] for p in results["attack_paths"]]
-            from collections import Counter
-            most_common = Counter(entry_points).most_common(1)
-            if most_common:
-                results["entry_point"] = most_common[0][0]
-            
-            # All devices in attack paths are compromised
-            all_devices = set()
-            for path_info in results["attack_paths"]:
-                all_devices.update(path_info["path"])
-            results["compromised_devices"] = list(all_devices)
-        
+
+        paths_found = []
+        for i in range(len(anomalous)):
+            for j in range(len(anomalous)):
+                if i == j:
+                    continue
+                src = anomalous[i]
+                dst = anomalous[j]
+                try:
+                    path = nx.shortest_path(self.graph, src, dst)
+                    if 2 <= len(path) <= cutoff:
+                        paths_found.append(path)
+                except Exception:
+                    continue
+
+        # unique paths
+        uniq = []
+        seen = set()
+        for p in paths_found:
+            t = tuple(p)
+            if t not in seen:
+                seen.add(t)
+                uniq.append(p)
+
+        if uniq:
+            results["lateral_movement_detected"] = True
+            for p in uniq[:20]:
+                results["attack_paths"].append(
+                    {
+                        "path": p,
+                        "length": len(p),
+                        "entry_point": p[0],
+                        "final_target": p[-1],
+                    }
+                )
+
+                # mark edges as lateral for export + visualization
+                for k in range(len(p) - 1):
+                    u, v = p[k], p[k + 1]
+                    if self.graph.has_edge(u, v):
+                        self.graph[u][v]["type"] = "lateral"
+
+            # entry point = most frequent start
+            starts = [p[0] for p in uniq]
+            entry = max(set(starts), key=starts.count)
+            results["entry_point"] = entry
+
+            compromised = set()
+            for p in uniq:
+                compromised.update(p)
+            results["compromised_devices"] = sorted(list(compromised))
+
         return results
-    
-    def detect_coordinated_attack(self, time_window_minutes: int = 5) -> Dict:
+
+    def detect_coordinated_attack(self, anomaly_ratio_threshold: float = 0.20) -> Dict:
         """
-        Detect coordinated attacks
-        - Multiple devices show anomalous behavior simultaneously
+        Coordinated attack:
+        - if too many anomalous nodes in current snapshot
         """
         results = {
             "coordinated_attack": False,
-            "attack_wave": [],
+            "attack_wave": 0,
             "affected_devices": [],
-            "attack_start_time": None
+            "attack_start_time": None,
         }
-        
-        # Count anomalous nodes
-        anomalous_nodes = [n for n in self.graph.nodes() 
-                          if self.graph.nodes[n].get('is_anomalous', False)]
-        
-        if len(anomalous_nodes) >= 3:  # 3+ simultaneous anomalies
+
+        N = self.graph.number_of_nodes()
+        if N == 0:
+            return results
+
+        anomalous = [n for n in self.graph.nodes if self.graph.nodes[n].get("is_anomalous", False)]
+        ratio = len(anomalous) / N
+
+        if len(anomalous) >= 3 and ratio >= anomaly_ratio_threshold:
             results["coordinated_attack"] = True
-            results["affected_devices"] = anomalous_nodes
-            results["attack_wave"] = len(anomalous_nodes)
-        
+            results["attack_wave"] = len(anomalous)
+            results["affected_devices"] = anomalous
+            results["attack_start_time"] = pd.Timestamp.now(tz="UTC").isoformat()
+
         return results
-    
-    def identify_critical_devices(self) -> List[Dict]:
+
+    def identify_critical_devices(self, min_score: float = 0.08) -> List[Dict]:
         """
-        Identify devices critical to network (high betweenness centrality)
-        These are targets for attackers
+        Critical devices = high betweenness centrality (bridges).
         """
-        if len(self.graph.nodes()) < 2:
+        if self.graph.number_of_nodes() < 3:
             return []
-        
-        # Betweenness centrality: how often node appears on shortest paths
+
         betweenness = nx.betweenness_centrality(self.graph)
-        
-        # Sort by criticality
-        critical_devices = []
-        for device, score in sorted(betweenness.items(), key=lambda x: x[1], reverse=True):
-            if score > 0.1:  # Significant bridging role
-                critical_devices.append({
-                    "device_id": device,
-                    "criticality_score": round(score, 3),
-                    "device_type": self.graph.nodes[device].get('device_type', 'unknown'),
-                    "is_anomalous": self.graph.nodes[device].get('is_anomalous', False)
-                })
-        
-        return critical_devices[:10]  # Top 10
-    
+        critical = []
+        for dev, score in sorted(betweenness.items(), key=lambda x: x[1], reverse=True):
+            if score >= min_score:
+                critical.append(
+                    {
+                        "device_id": dev,
+                        "criticality_score": round(float(score), 3),
+                        "device_type": self.graph.nodes[dev].get("device_type", "unknown"),
+                        "is_anomalous": bool(self.graph.nodes[dev].get("is_anomalous", False)),
+                    }
+                )
+        return critical[:10]
+
     def detect_isolated_devices(self) -> List[str]:
-        """
-        Find isolated devices (potential victims or compromised devices)
-        """
         isolated = []
-        
-        for node in self.graph.nodes():
-            in_deg = self.graph.in_degree(node)
-            out_deg = self.graph.out_degree(node)
-            
-            # Isolated if very few connections
-            if in_deg + out_deg <= 1:
-                isolated.append(node)
-        
+        for n in self.graph.nodes:
+            if self.graph.in_degree(n) + self.graph.out_degree(n) <= 1:
+                isolated.append(n)
         return isolated
-    
+
     def get_network_health_score(self) -> float:
         """
-        Calculate overall network health (0-100)
+        Health score:
+        - penalize anomaly ratio
+        - reward connectivity
+        - penalize too many isolated nodes
         """
-        if len(self.graph.nodes()) == 0:
+        N = self.graph.number_of_nodes()
+        if N == 0:
             return 100.0
-        
-        # Factors affecting health
-        anomalous_count = sum(1 for n in self.graph.nodes() 
-                            if self.graph.nodes[n].get('is_anomalous', False))
-        anomaly_ratio = anomalous_count / len(self.graph.nodes())
-        
-        # More connections generally better (resilient network)
-        avg_degree = sum(dict(self.graph.degree()).values()) / len(self.graph.nodes())
-        connectivity_score = min(avg_degree / 5, 1.0)  # Normalize
-        
-        # Health score (higher is better)
-        health = (1 - anomaly_ratio) * 70 + connectivity_score * 30
-        
-        return round(health, 2)
-    
+
+        anomalous = sum(1 for n in self.graph.nodes if self.graph.nodes[n].get("is_anomalous", False))
+        anomaly_ratio = anomalous / N
+
+        avg_degree = sum(dict(self.graph.degree()).values()) / N
+        connectivity = min(avg_degree / 6.0, 1.0)
+
+        isolated = len(self.detect_isolated_devices())
+        isolated_ratio = isolated / N
+
+        health = (1 - anomaly_ratio) * 65 + connectivity * 25 + (1 - isolated_ratio) * 10
+        return round(float(max(0.0, min(100.0, health))), 2)
+
+    # -----------------------------
+    # Export for frontend
+    # -----------------------------
+
+    def export_for_frontend(self) -> Dict:
+        """
+        Build nodes[] + links[] for react-force-graph.
+        Groups:
+          - normal | anomalous | c2 | critical
+        Link types:
+          - inferred | explicit | c2 | lateral
+        """
+        # mark c2/critical nodes with groups
+        node_group: Dict[str, str] = {}
+        for n in self.graph.nodes:
+            node_group[n] = "anomalous" if self.graph.nodes[n].get("is_anomalous", False) else "normal"
+
+        # critical overrides normal
+        critical = self.identify_critical_devices()
+        for c in critical:
+            if node_group.get(c["device_id"]) != "anomalous":
+                node_group[c["device_id"]] = "critical"
+
+        # c2 overrides everything
+        bot = self.detect_botnet_patterns()
+        for c2 in bot.get("c2_candidates", []):
+            node_group[c2["device_id"]] = "c2"
+
+        nodes = []
+        for n in self.graph.nodes:
+            nodes.append(
+                {
+                    "id": n,
+                    "group": node_group.get(n, "normal"),
+                    "device_type": self.graph.nodes[n].get("device_type", "unknown"),
+                    "is_anomalous": bool(self.graph.nodes[n].get("is_anomalous", False)),
+                    "traffic": int(self.graph.nodes[n].get("total_traffic", 0)),
+                    "cpu": float(self.graph.nodes[n].get("avg_cpu", 0.0)),
+                    "memory": float(self.graph.nodes[n].get("avg_memory", 0.0)),
+                    "in": int(self.graph.in_degree(n)),
+                    "out": int(self.graph.out_degree(n)),
+                }
+            )
+
+        links = []
+        for u, v, d in self.graph.edges(data=True):
+            links.append(
+                {
+                    "source": u,
+                    "target": v,
+                    "type": d.get("type", "inferred"),
+                    "weight": float(d.get("weight", 1.0)),
+                    "count": int(d.get("count", 1)),
+                    "total_packets": int(d.get("total_packets", 0)),
+                    "total_out_kb": int(d.get("total_out_kb", 0)),
+                }
+            )
+
+        return {"nodes": nodes, "links": links}
+
+    # -----------------------------
+    # Full analysis
+    # -----------------------------
+
     def analyze_network(self, telemetry_data: pd.DataFrame) -> Dict:
-        """
-        Complete network analysis
-        """
         print("🔍 Building communication graph...")
         self.build_communication_graph(telemetry_data)
-        
+
         print("🤖 Detecting botnet patterns...")
-        botnet_results = self.detect_botnet_patterns()
-        
+        botnet = self.detect_botnet_patterns()
+
         print("🔄 Detecting lateral movement...")
-        lateral_results = self.detect_lateral_movement()
-        
+        lateral = self.detect_lateral_movement()
+
         print("⚡ Detecting coordinated attacks...")
-        coordinated_results = self.detect_coordinated_attack()
-        
+        coordinated = self.detect_coordinated_attack()
+
         print("🎯 Identifying critical devices...")
-        critical_devices = self.identify_critical_devices()
-        
+        critical = self.identify_critical_devices()
+
         print("📊 Calculating network health...")
-        health_score = self.get_network_health_score()
-        
-        isolated_devices = self.detect_isolated_devices()
-        
+        health = self.get_network_health_score()
+
+        isolated = self.detect_isolated_devices()
+
+        export = self.export_for_frontend()
+
         return {
             "network_summary": {
-                "total_devices": len(self.graph.nodes()),
-                "total_connections": len(self.graph.edges()),
-                "health_score": health_score,
-                "isolated_devices": isolated_devices
+                "total_devices": int(self.graph.number_of_nodes()),
+                "total_connections": int(self.graph.number_of_edges()),
+                "health_score": float(health),
+                "isolated_devices": isolated,
             },
-            "botnet_analysis": botnet_results,
-            "lateral_movement": lateral_results,
-            "coordinated_attack": coordinated_results,
-            "critical_devices": critical_devices
+            "botnet_analysis": botnet,
+            "lateral_movement": lateral,
+            "coordinated_attack": coordinated,
+            "critical_devices": critical,
+            # NEW: frontend-ready graph payload
+            "graph": export,
         }
-    
-    def visualize_network(self, save_path: str = "network_graph.png"):
+
+    # -----------------------------
+    # Visualization
+    # -----------------------------
+
+    def visualize_network(self, save_path: str = "network_graph.png", max_nodes: int = 200):
         """
-        Visualize the network graph
+        Matplotlib visualization:
+        - Node color by group: normal/anomalous/c2/critical
+        - Edge color by type: inferred/explicit/c2/lateral
+        - Node size by traffic
+        - Edge width by volume/count
         """
-        plt.figure(figsize=(14, 10))
-        
-        # Position nodes using spring layout
-        pos = nx.spring_layout(self.graph, k=2, iterations=50)
-        
-        # Color nodes by anomaly status
-        node_colors = []
-        for node in self.graph.nodes():
-            if self.graph.nodes[node].get('is_anomalous', False):
-                node_colors.append('#ff4444')  # Red for anomalous
+        if self.graph.number_of_nodes() == 0:
+            print("⚠️ No nodes to visualize")
+            return
+
+        # Optionally downsample for readability
+        G = self.graph
+        if G.number_of_nodes() > max_nodes:
+            # keep top nodes by degree
+            deg = sorted(G.degree, key=lambda x: x[1], reverse=True)[:max_nodes]
+            keep = set([n for n, _ in deg])
+            G = G.subgraph(keep).copy()
+
+        # build groups using exporter
+        exp = self.export_for_frontend()
+        group_map = {n["id"]: n["group"] for n in exp["nodes"]}
+
+        plt.figure(figsize=(16, 11))
+        pos = nx.spring_layout(G, k=1.5, iterations=60, seed=42)
+
+        # node colors
+        def node_color(n):
+            g = group_map.get(n, "normal")
+            if g == "c2":
+                return "#f97316"  # orange
+            if g == "critical":
+                return "#facc15"  # yellow
+            if g == "anomalous":
+                return "#ef4444"  # red
+            return "#22c55e"     # green
+
+        node_colors = [node_color(n) for n in G.nodes]
+
+        # node sizes (traffic)
+        sizes = []
+        for n in G.nodes:
+            t = int(_safe_num(self.graph.nodes[n].get("total_traffic", 0), 0))
+            sizes.append(max(80, min(1800, 80 + t * 0.4)))
+
+        nx.draw_networkx_nodes(G, pos, node_color=node_colors, node_size=sizes, alpha=0.85)
+        nx.draw_networkx_labels(G, pos, font_size=8, font_weight="bold")
+
+        # edge styling by type
+        edge_colors = []
+        edge_widths = []
+        for u, v, d in G.edges(data=True):
+            typ = d.get("type", "inferred")
+            if typ == "lateral":
+                edge_colors.append("#22d3ee")  # cyan
+            elif typ == "c2":
+                edge_colors.append("#fb923c")  # orange
+            elif typ == "explicit":
+                edge_colors.append("#e5e7eb")  # light gray
             else:
-                node_colors.append('#44ff44')  # Green for normal
-        
-        # Node sizes by traffic volume
-        node_sizes = []
-        for node in self.graph.nodes():
-            traffic = self.graph.nodes[node].get('total_traffic', 100)
-            node_sizes.append(traffic / 2)  # Scale down
-        
-        # Draw graph
-        nx.draw_networkx_nodes(self.graph, pos, 
-                              node_color=node_colors,
-                              node_size=node_sizes,
-                              alpha=0.7)
-        
-        nx.draw_networkx_labels(self.graph, pos, 
-                               font_size=8,
-                               font_weight='bold')
-        
-        # Draw edges with varying thickness
-        edges = self.graph.edges()
-        weights = [self.graph[u][v].get('weight', 1) * 2 for u, v in edges]
-        
-        nx.draw_networkx_edges(self.graph, pos,
-                              width=weights,
-                              alpha=0.5,
-                              arrows=True,
-                              arrowsize=15)
-        
-        plt.title("IoT Device Communication Network\nRed=Anomalous, Green=Normal, Size=Traffic Volume", 
-                 fontsize=14, fontweight='bold')
-        plt.axis('off')
+                edge_colors.append("#6b7280")  # gray
+
+            # width = mix of count + out_kb
+            count = int(d.get("count", 1))
+            out_kb = int(d.get("total_out_kb", 0))
+            w = 0.8 + min(5.0, (count / 10.0) + (out_kb / 3000.0))
+            edge_widths.append(w)
+
+        nx.draw_networkx_edges(
+            G,
+            pos,
+            width=edge_widths,
+            edge_color=edge_colors,
+            alpha=0.55,
+            arrows=True,
+            arrowsize=14,
+            connectionstyle="arc3,rad=0.12",
+        )
+
+        plt.title(
+            "IoT Network Communication Graph\n"
+            "Nodes: green=normal, red=anomalous, yellow=critical, orange=C2 | "
+            "Edges: gray=inferred, white=explicit, cyan=lateral, orange=C2",
+            fontsize=13,
+            fontweight="bold",
+        )
+        plt.axis("off")
         plt.tight_layout()
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        print(f"✅ Network visualization saved: {save_path}")
+        plt.savefig(save_path, dpi=250, bbox_inches="tight")
         plt.close()
+        print(f"✅ Network visualization saved: {save_path}")
 
 
-# ============================================================================
-# EXAMPLE USAGE
-# ============================================================================
-
+# -----------------------------
+# Example usage
+# -----------------------------
 if __name__ == "__main__":
     print("=" * 80)
-    print("🕸️ NETWORK BEHAVIOR GRAPH ANALYSIS")
+    print("🕸️ NETWORK BEHAVIOR GRAPH ANALYSIS (ENHANCED)")
     print("=" * 80)
-    
-    # Load data
+
     df = pd.read_csv("data/smart_system_anomaly_dataset.csv")
-    
-    # Take sample for analysis
-    sample_df = df.sample(n=min(100, len(df)), random_state=42)
-    
-    # Analyze network
-    analyzer = NetworkGraphAnalyzer()
-    results = analyzer.analyze_network(sample_df)
-    
-    # Print results
-    print("\n" + "=" * 80)
-    print("📊 NETWORK ANALYSIS RESULTS")
-    print("=" * 80)
-    
+
+    # Ensure optional fields exist for demo compatibility
+    if "label" not in df.columns:
+        df["label"] = "Normal"
+    if "timestamp" not in df.columns:
+        df["timestamp"] = pd.Timestamp.now(tz="UTC").isoformat()
+
+    sample = df.sample(n=min(200, len(df)), random_state=42)
+
+    analyzer = NetworkGraphAnalyzer(
+        use_comm_target=True,
+        inference_enabled=True,
+        inference_time_window_sec=30,
+        inference_threshold=0.55,
+    )
+
+    results = analyzer.analyze_network(sample)
+
     print("\n🌐 Network Summary:")
-    for key, value in results["network_summary"].items():
-        print(f"   {key}: {value}")
-    
+    for k, v in results["network_summary"].items():
+        print(f"   {k}: {v}")
+
     print("\n🤖 Botnet Detection:")
     if results["botnet_analysis"]["botnet_detected"]:
         print("   ⚠️ BOTNET DETECTED!")
         for c2 in results["botnet_analysis"]["c2_candidates"]:
-            print(f"   C&C Candidate: {c2['device_id']} (score: {c2['c2_score']})")
-        print(f"   Recruited devices: {len(results['botnet_analysis']['recruited_devices'])}")
+            print(f"   C2: {c2['device_id']} | score={c2['c2_score']} | out={c2['out_connections']}")
     else:
         print("   ✅ No botnet detected")
-    
+
     print("\n🔄 Lateral Movement:")
     if results["lateral_movement"]["lateral_movement_detected"]:
         print("   ⚠️ LATERAL MOVEMENT DETECTED!")
         print(f"   Entry point: {results['lateral_movement']['entry_point']}")
-        print(f"   Attack paths found: {len(results['lateral_movement']['attack_paths'])}")
-        for path_info in results['lateral_movement']['attack_paths'][:3]:
-            print(f"   Path: {' → '.join(path_info['path'])}")
+        for p in results["lateral_movement"]["attack_paths"][:5]:
+            print("   Path:", " → ".join(p["path"]))
     else:
         print("   ✅ No lateral movement detected")
-    
+
     print("\n⚡ Coordinated Attack:")
     if results["coordinated_attack"]["coordinated_attack"]:
         print("   ⚠️ COORDINATED ATTACK DETECTED!")
         print(f"   Affected devices: {results['coordinated_attack']['attack_wave']}")
     else:
         print("   ✅ No coordinated attack detected")
-    
-    print("\n🎯 Critical Devices:")
-    for device in results["critical_devices"][:5]:
-        status = "⚠️ ANOMALOUS" if device['is_anomalous'] else "✅"
-        print(f"   {status} {device['device_id']} - Criticality: {device['criticality_score']}")
-    
-    # Visualize
-    print("\n📊 Generating network visualization...")
+
+    print("\n🎯 Critical Devices (top 5):")
+    for d in results["critical_devices"][:5]:
+        print(f"   {d['device_id']} | score={d['criticality_score']} | anomalous={d['is_anomalous']}")
+
+    print("\n📊 Generating visualization...")
     analyzer.visualize_network("network_analysis.png")
-    
-    # Save results
+
     with open("network_analysis_results.json", "w") as f:
         json.dump(results, f, indent=2)
     print("✅ Results saved: network_analysis_results.json")
-    
-    print("\n" + "=" * 80)
+    print("=" * 80)

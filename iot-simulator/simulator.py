@@ -18,24 +18,24 @@ TOPIC_PREFIX = os.getenv("MQTT_TOPIC_PREFIX", "devices")
 fake = Faker()
 
 # ============================================================================
-# CONFIG : nombre de devices + rythme d'envoi
+# CONFIG : total devices = 20
 # ============================================================================
 
-NUM_CAMERAS = int(os.getenv("SIM_CAMERAS", "25"))
-NUM_SENSORS = int(os.getenv("SIM_SENSORS", "60"))
-NUM_THERMOSTATS = int(os.getenv("SIM_THERMOSTATS", "25"))
-NUM_LIGHTS = int(os.getenv("SIM_LIGHTS", "40"))
+NUM_CAMERAS = 5
+NUM_SENSORS = 8
+NUM_THERMOSTATS = 4
+NUM_LIGHTS = 3
 
-BATCH_SIZE = int(os.getenv("SIM_BATCH_SIZE", "15"))      # nb messages par tick
-SLEEP_SECONDS = float(os.getenv("SIM_SLEEP", "0.5"))     # pause entre ticks
+BATCH_SIZE = int(os.getenv("SIM_BATCH_SIZE", "5"))      # nb messages par tick
+SLEEP_SECONDS = float(os.getenv("SIM_SLEEP", "1.5"))     # pause entre ticks
 
 # Probabilités globales
-NORMAL_PROB = float(os.getenv("SIM_NORMAL_PROB", "0.85"))  # 85% normal, 15% attaques
+NORMAL_PROB = float(os.getenv("SIM_NORMAL_PROB", "0.90"))  # 85% normal, 15% attaques
 
 ATTACK_TYPES = ["normal", "dos", "injection", "spoofing"]
 
 # ============================================================================
-# Générer une grande liste de devices (pas juste 4)
+# Générer EXACTEMENT 20 devices
 # ============================================================================
 
 DEVICES = (
@@ -52,18 +52,6 @@ DEVICE_IDS = [d["id"] for d in DEVICES]
 # ============================================================================
 
 def generate_telemetry(device, attack_type="normal"):
-    """
-    Génère une télémétrie compatible avec ton API / ML :
-    - device_id, device_type
-    - cpu_usage, memory_usage
-    - network_in_kb, network_out_kb
-    - packet_rate, avg_response_time_ms
-    - service_access_count, failed_auth_attempts
-    - is_encrypted, geo_location_variation
-    + attack_label (pour analyse offline)
-    + comm_target (optionnel) pour créer des edges dans ton graph
-    """
-
     # Baselines
     base_cpu = random.uniform(10, 40)
     base_mem = random.uniform(20, 60)
@@ -80,7 +68,6 @@ def generate_telemetry(device, attack_type="normal"):
         cpu = base_cpu + random.uniform(40, 55)
         packets = base_packets + random.randint(800, 1500)
         failed_auth = base_failed_auth
-        # un DoS peut pousser plus de trafic
         base_out = min(2000, base_out + random.randint(400, 1200))
 
     elif attack_type == "injection":
@@ -99,11 +86,9 @@ def generate_telemetry(device, attack_type="normal"):
         packets = base_packets
         failed_auth = base_failed_auth
 
-    # (OPTIONNEL) créer des liens "qui parle à qui"
-    # 60% des messages ont une cible -> edges dans le graphe
+    # créer des liens (edges)
     comm_target = None
     if random.random() < 0.6:
-        # éviter que device parle à lui-même
         comm_target = random.choice([x for x in DEVICE_IDS if x != device["id"]])
 
     payload = {
@@ -126,10 +111,7 @@ def generate_telemetry(device, attack_type="normal"):
         "is_encrypted": 1 if random.random() > 0.2 else 0,
         "geo_location_variation": round(base_geo_var, 2),
 
-        # Utile pour analyse / entrainement offline
         "attack_label": attack_type,
-
-        # NEW: utile pour le network graph (facultatif mais recommandé)
         "comm_target": comm_target,
     }
 
@@ -137,13 +119,9 @@ def generate_telemetry(device, attack_type="normal"):
 
 
 def pick_attack_type(device_type: str) -> str:
-    """
-    Optionnel: rendre les attaques un peu plus réalistes selon le type de device.
-    """
     if random.random() < NORMAL_PROB:
         return "normal"
 
-    # pondération simple
     if device_type == "camera":
         return random.choices(["dos", "spoofing", "injection"], weights=[0.55, 0.25, 0.20])[0]
     if device_type == "sensor":
@@ -157,18 +135,16 @@ def main():
     client = mqtt.Client(client_id="ai-iot-simulator")
 
     print(f"🔌 Connexion au broker MQTT {MQTT_HOST}:{MQTT_PORT} ...")
-    print(f"📦 Devices: {len(DEVICES)} | batch={BATCH_SIZE} | sleep={SLEEP_SECONDS}s")
+    print(f"📦 Devices: {len(DEVICES)} (expected 20) | batch={BATCH_SIZE} | sleep={SLEEP_SECONDS}s")
 
     client.connect(MQTT_HOST, MQTT_PORT, keepalive=60)
     client.loop_start()
 
     try:
         while True:
-            # Envoie en batch -> tu remplis vite la DB + l'analyse réseau
             for _ in range(BATCH_SIZE):
                 device = random.choice(DEVICES)
                 attack_type = pick_attack_type(device["type"])
-
                 payload = generate_telemetry(device, attack_type)
 
                 topic = f"{TOPIC_PREFIX}/{device['id']}/telemetry"

@@ -69,6 +69,8 @@ except Exception as e:
 class DeviceTelemetry(BaseModel):
     device_id: str
     device_type: str
+    #  NEW (OPTIONAL BUT CRITICAL)
+    comm_target: Optional[str] = None
     cpu_usage: float = Field(..., ge=0, le=100)
     memory_usage: float = Field(..., ge=0, le=100)
     network_in_kb: int = Field(..., ge=0)
@@ -346,16 +348,21 @@ async def analyze_network(request: NetworkAnalysisRequest):
         
         # Analyze network
         analysis = network_analyzer.analyze_network(df)
-        
-        logger.info(f"Network analysis completed: {len(df)} devices analyzed")
-        
+
+        # ✅ normalize graph naming for frontend
+        graph = analysis.get("graph", {})
+        graph["edges"] = graph.pop("links", [])  # frontend expects edges
+
         return {
             "success": True,
-            "analysis": analysis,
+            "analysis": {
+                **analysis,
+                "graph": graph
+            },
             "devices_analyzed": len(df),
             "timestamp": pd.Timestamp.now().isoformat()
         }
-        
+
     except Exception as e:
         logger.error(f"Network analysis error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Network analysis error: {str(e)}")
