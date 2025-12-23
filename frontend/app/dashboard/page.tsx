@@ -12,8 +12,8 @@ export default async function DashboardPage() {
   const [summary, detections, anomalies, threats, networkStatus] =
     await Promise.all([
       fetchSummary(),
-      fetchDetections(50),
-      fetchRecentAnomalies(10),
+      fetchDetections(10000),
+      fetchRecentAnomalies(500),
       fetchThreatDistribution(),
       fetchNetworkStatus().catch(() => null),
     ]);

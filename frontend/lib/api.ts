@@ -72,7 +72,7 @@ export type NetworkAnalysis = {
 // API FUNCTIONS
 // ============================================================================
 
-export async function fetchDetections(limit = 50, filters?: {
+export async function fetchDetections(limit = 10000, filters?: {
   deviceId?: string;
   severity?: string;
   isAnomaly?: boolean;

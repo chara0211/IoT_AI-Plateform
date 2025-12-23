@@ -20,6 +20,37 @@ app.use(cors());
 app.use(express.json());
 
 // ============================================================================
+// ✅ AUTO-CLEANUP (RUNS EVERY HOUR)
+// ============================================================================
+
+async function autoCleanup() {
+  try {
+    const hoursAgo = new Date();
+    hoursAgo.setHours(hoursAgo.getHours() - 48);
+
+    const deleted = await prisma.detection.deleteMany({
+      where: {
+        createdAt: {
+          lt: hoursAgo,
+        },
+      },
+    });
+
+    if (deleted.count > 0) {
+      console.log(`🗑️  Auto-cleanup: Deleted ${deleted.count} old detections (>48h)`);
+    }
+  } catch (e) {
+    console.error("❌ Auto-cleanup failed:", e);
+  }
+}
+
+// Run cleanup every hour
+setInterval(autoCleanup, 60 * 60 * 1000);
+
+// Run once on startup
+autoCleanup();
+
+// ============================================================================
 // HEALTH & STATUS
 // ============================================================================
 
@@ -142,11 +173,11 @@ app.post("/api/telemetry/explained", async (req, res) => {
 // QUERY ENDPOINTS
 // ============================================================================
 
-// Get detections with filters
+// ✅ Get detections with filters (OPTIMIZED)
 app.get("/api/detections", async (req, res) => {
   try {
     const {
-      limit = "50",
+      limit = "1000",  // ✅ Reasonable default limit
       deviceId,
       severity,
       isAnomaly,
@@ -163,7 +194,12 @@ app.get("/api/detections", async (req, res) => {
       where.isAnomaly = isAnomaly === "true";
     }
 
-    if (startDate || endDate) {
+    // ✅ DEFAULT: Only last 48 hours if no date range specified
+    if (!startDate && !endDate) {
+      const fortyEightHoursAgo = new Date();
+      fortyEightHoursAgo.setHours(fortyEightHoursAgo.getHours() - 48);
+      where.createdAt = { gte: fortyEightHoursAgo };
+    } else if (startDate || endDate) {
       where.createdAt = {};
       if (startDate) where.createdAt.gte = new Date(String(startDate));
       if (endDate) where.createdAt.lte = new Date(String(endDate));
@@ -172,7 +208,7 @@ app.get("/api/detections", async (req, res) => {
     const detections = await prisma.detection.findMany({
       where,
       orderBy: { createdAt: "desc" },
-      take: parseInt(limit as string, 10),
+      take: parseInt(limit as string, 10),  // ✅ Apply limit
     });
 
     res.json(detections);
@@ -355,7 +391,6 @@ app.get("/api/network/status", async (req, res) => {
 
 const PORT = process.env.PORT || 5000;
 
-
 // Create HTTP server so Socket.IO can attach
 const httpServer = http.createServer(app);
 
@@ -365,17 +400,17 @@ initSocket(httpServer);
 // Start MQTT subscriber (will emit via sockets if you wired it)
 startMqttSubscriber();
 
-
 httpServer.listen(PORT, () => {
-  console.log(`✅ Backend server running on http://localhost:${PORT}`);
-  console.log(`🔗 ML Engine URL: ${process.env.ML_BASE_URL || "http://localhost:8000"}`);
-  console.log("📡 Endpoints:");
+  console.log(` Backend server running on http://localhost:${PORT}`);
+  console.log(` ML Engine URL: ${process.env.ML_BASE_URL || "http://localhost:8000"}`);
+  console.log(" Endpoints:");
   console.log("  - POST /api/telemetry (standard detection)");
-  console.log("  - POST /api/telemetry/explained (with SHAP) 🆕");
-  console.log("  - POST /api/network/analyze (network analysis) 🆕");
-  console.log("  - GET  /api/network/status (current network) 🆕");
-  console.log("  - GET  /api/detections");
+  console.log("  - POST /api/telemetry/explained (with SHAP) ");
+  console.log("  - POST /api/network/analyze (network analysis) ");
+  console.log("  - GET  /api/network/status (current network) ");
+  console.log("  - GET  /api/detections (optimized with 48h default) ");
   console.log("  - GET  /api/stats/summary");
-  console.log("  - GET  /api/stats/threats 🆕");
-  console.log("  - GET  /api/stats/timeline 🆕");
+  console.log("  - GET  /api/stats/threats ");
+  console.log("  - GET  /api/stats/timeline ");
+  console.log("🗑️  Auto-cleanup: Running every hour (deletes data >48h)");
 });

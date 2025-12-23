@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 from typing import List, Dict, Optional
 import logging
+from routers.agent import router as agent_router
 
 # Import our new enhancements
 import sys
@@ -430,6 +431,9 @@ async def detect_anomaly(data: DeviceTelemetry):
     except Exception as e:
         logger.error(f"Error in detection: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Detection error: {str(e)}")
+
+
+app.include_router(agent_router, prefix="/api")
 
 # ============================================================================
 # STARTUP
