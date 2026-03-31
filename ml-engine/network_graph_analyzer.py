@@ -661,7 +661,7 @@ class NetworkGraphAnalyzer:
         plt.tight_layout()
         plt.savefig(save_path, dpi=250, bbox_inches="tight")
         plt.close()
-        print(f"✅ Network visualization saved: {save_path}")
+        print(f" Network visualization saved: {save_path}")
 
 
 # -----------------------------

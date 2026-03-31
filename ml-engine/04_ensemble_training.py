@@ -102,7 +102,7 @@ X_test_scaled = scaler.transform(X_test)
 
 # Save scaler for API
 joblib.dump(scaler, "models/scaler.pkl")
-print("   ✅ Saved scaler -> models/scaler.pkl")
+print("    Saved scaler -> models/scaler.pkl")
 
 # Remettre en DataFrame (index aligné avec y_train et y_test)
 X_train_scaled = pd.DataFrame(X_train_scaled, columns=feature_columns)
@@ -115,10 +115,10 @@ X_test_scaled = pd.DataFrame(X_test_scaled, columns=feature_columns)
 # y_train a maintenant le même index que X_train_scaled
 X_train_normal = X_train_scaled[y_train == "Normal"]
 
-print(f"\n📊 Training 3 models and combining their predictions...")
+print(f"\n Training 3 models and combining their predictions...")
 
 # ---------------- Isolation Forest ----------------
-print("\n1️⃣ Training Isolation Forest...")
+print("\n1 Training Isolation Forest...")
 iso_forest = IsolationForest(
     contamination=0.25,  # tu peux ajuster
     n_estimators=150,
@@ -128,10 +128,10 @@ iso_forest = IsolationForest(
 )
 iso_forest.fit(X_train_normal)
 pred1 = iso_forest.predict(X_test_scaled)  # -1 or 1
-print("   ✅ Done")
+print("    Done")
 
 # ---------------- Random Forest (supervised) ----------------
-print("\n2️⃣ Training Random Forest...")
+print("\n Training Random Forest...")
 y_train_binary = ["Anomaly" if label != "Normal" else "Normal" for label in y_train]
 y_test_binary = ["Anomaly" if label != "Normal" else "Normal" for label in y_test]
 
@@ -144,10 +144,10 @@ rf = RandomForestClassifier(
 rf.fit(X_train_scaled, y_train_binary)
 pred2_labels = rf.predict(X_test_scaled)
 pred2 = [1 if p == "Normal" else -1 for p in pred2_labels]
-print("   ✅ Done")
+print("    Done")
 
 # ---------------- One-Class SVM ----------------
-print("\n3️⃣ Training One-Class SVM...")
+print("\n Training One-Class SVM...")
 svm = OneClassSVM(
     kernel="rbf",
     gamma="auto",
@@ -155,13 +155,13 @@ svm = OneClassSVM(
 )
 svm.fit(X_train_normal)
 pred3 = svm.predict(X_test_scaled)
-print("   ✅ Done")
+print("    Done")
 
 # ============================================================================
 # 6. ENSEMBLE: Majority Voting (2 / 3)
 # ============================================================================
 
-print("\n🗳️ Combining predictions (majority vote)...")
+print("\n Combining predictions (majority vote)...")
 
 ensemble_pred = []
 for i in range(len(X_test_scaled)):
@@ -176,11 +176,11 @@ ensemble_labels = ["Anomaly" if p == -1 else "Normal" for p in ensemble_pred]
 # ============================================================================
 
 print("\n" + "=" * 80)
-print("📊 ENSEMBLE PERFORMANCE")
+print(" ENSEMBLE PERFORMANCE")
 print("=" * 80)
 
 accuracy = accuracy_score(y_test_binary, ensemble_labels)
-print(f"\n🎯 Ensemble Accuracy: {accuracy*100:.2f}%")
+print(f"\n Ensemble Accuracy: {accuracy*100:.2f}%")
 
 iso_labels = ["Anomaly" if p == -1 else "Normal" for p in pred1]
 rf_labels = pred2_labels
@@ -194,27 +194,27 @@ print(f"\nIndividual Model Accuracies:")
 print(f"   Isolation Forest: {acc_iso*100:.2f}%")
 print(f"   Random Forest:    {acc_rf*100:.2f}%")
 print(f"   One-Class SVM:    {acc_svm*100:.2f}%")
-print(f"   🌟 ENSEMBLE:      {accuracy*100:.2f}%")
+print(f"    ENSEMBLE:      {accuracy*100:.2f}%")
 
 print("\n" + "=" * 80)
 print("DETAILED CLASSIFICATION REPORT")
 print("=" * 80)
 print(classification_report(y_test_binary, ensemble_labels))
 
-print("\n🚨 PER-ATTACK DETECTION:")
+print("\n PER-ATTACK DETECTION:")
 for attack in ["Anomaly_DoS", "Anomaly_Injection", "Anomaly_Spoofing"]:
     indices = [i for i, label in enumerate(y_test) if label == attack]
     if len(indices) > 0:
         detected = sum(1 for i in indices if ensemble_pred[i] == -1)
         rate = (detected / len(indices)) * 100
-        status = "🌟" if rate >= 90 else "✅" if rate >= 80 else "⚠️"
+        status = "" if rate >= 90 else "" if rate >= 80 else "⚠️"
         print(f"   {status} {attack}: {detected}/{len(indices)} ({rate:.1f}%)")
 
 # ============================================================================
 # 8. SAVE ENSEMBLE
 # ============================================================================
 
-print("\n💾 Saving ensemble models...")
+print("\n Saving ensemble models...")
 
 ensemble = {
     "isolation_forest": iso_forest,
@@ -224,16 +224,16 @@ ensemble = {
 }
 
 joblib.dump(ensemble, "models/ensemble_model.pkl")
-print("   ✅ models/ensemble_model.pkl")
+print("    models/ensemble_model.pkl")
 
 if accuracy >= 0.90:
-    print("   ✅ Ensemble set as primary model!")
+    print("    Ensemble set as primary model!")
 
 print("\n" + "=" * 80)
 if accuracy >= 0.92:
-    print("🎉 EXCELLENT! Ensemble achieves 92%+ accuracy!")
+    print(" EXCELLENT! Ensemble achieves 92%+ accuracy!")
 elif accuracy >= 0.88:
-    print("✅ GREAT! Ensemble performs very well!")
+    print(" GREAT! Ensemble performs very well!")
 else:
-    print("⚠️ GOOD! Ensemble improves over single model")
+    print(" GOOD! Ensemble improves over single model")
 print("=" * 80)

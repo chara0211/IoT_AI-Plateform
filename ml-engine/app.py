@@ -185,7 +185,7 @@ def get_recommended_actions(risk_score: int, threat_type: str) -> List[str]:
     """Get actions based on risk level"""
     if risk_score >= 80:
         return [
-            "🚨 CRITICAL: Isolate device from network immediately",
+            " CRITICAL: Isolate device from network immediately",
             "Block all traffic to/from this device",
             "Capture network traffic for forensic analysis",
             "Alert security team and escalate",
@@ -193,7 +193,7 @@ def get_recommended_actions(risk_score: int, threat_type: str) -> List[str]:
         ]
     elif risk_score >= 60:
         return [
-            "⚠️ HIGH: Restrict device network access",
+            " HIGH: Restrict device network access",
             "Enable enhanced monitoring",
             "Alert administrator",
             "Review device logs",
@@ -201,14 +201,14 @@ def get_recommended_actions(risk_score: int, threat_type: str) -> List[str]:
         ]
     elif risk_score >= 40:
         return [
-            "ℹ️ MEDIUM: Flag for security review",
+            "ℹ MEDIUM: Flag for security review",
             "Increase monitoring frequency",
             "Log all device activities",
             "Notify system administrator"
         ]
     else:
         return [
-            "ℹ️ LOW: Continue monitoring",
+            "ℹ LOW: Continue monitoring",
             "Log for future analysis"
         ]
 
@@ -350,7 +350,7 @@ async def analyze_network(request: NetworkAnalysisRequest):
         # Analyze network
         analysis = network_analyzer.analyze_network(df)
 
-        # ✅ normalize graph naming for frontend
+        #  normalize graph naming for frontend
         graph = analysis.get("graph", {})
         graph["edges"] = graph.pop("links", [])  # frontend expects edges
 
@@ -443,13 +443,13 @@ app.include_router(agent_router, prefix="/api")
 async def startup_event():
     """Run on startup"""
     logger.info("=" * 80)
-    logger.info("🚀 IoT Security ML Engine - ENHANCED VERSION")
+    logger.info(" IoT Security ML Engine - ENHANCED VERSION")
     logger.info("=" * 80)
-    logger.info("✅ Ensemble models loaded")
-    logger.info("✅ Explainable AI (SHAP) ready")
-    logger.info("✅ Network Graph Analyzer ready")
-    logger.info("✅ API ready on http://localhost:8000")
-    logger.info("📖 Documentation: http://localhost:8000/docs")
+    logger.info(" Ensemble models loaded")
+    logger.info(" Explainable AI (SHAP) ready")
+    logger.info(" Network Graph Analyzer ready")
+    logger.info(" API ready on http://localhost:8000")
+    logger.info(" Documentation: http://localhost:8000/docs")
     logger.info("=" * 80)
     logger.info("NEW ENDPOINTS:")
     logger.info("  - /api/ml/detect/explained (with SHAP explanations)")

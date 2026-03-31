@@ -14,11 +14,11 @@ import warnings
 warnings.filterwarnings('ignore')
 
 print("=" * 80)
-print("🎯 ENSEMBLE MODEL TRAINING - IMPROVED VERSION")
+print(" ENSEMBLE MODEL TRAINING - IMPROVED VERSION")
 print("=" * 80)
 
 # Load data
-print("📁 Loading data...")
+print(" Loading data...")
 X_train = pd.read_csv('data/X_train_scaled.csv')
 X_test = pd.read_csv('data/X_test_scaled.csv')
 y_train = pd.read_csv('data/y_train.csv')['label']
@@ -26,13 +26,13 @@ y_test = pd.read_csv('data/y_test.csv')['label']
 
 X_train_normal = X_train[y_train == 'Normal']
 
-print(f"📊 Data shapes: Train {X_train.shape}, Test {X_test.shape}")
-print(f"🔍 Normal samples in training: {len(X_train_normal)}")
+print(f" Data shapes: Train {X_train.shape}, Test {X_test.shape}")
+print(f" Normal samples in training: {len(X_train_normal)}")
 
 # ============================================================================
 # MODEL 1: Isolation Forest (Less Sensitive)
 # ============================================================================
-print("\n1️⃣ Training Isolation Forest (less sensitive)...")
+print("\n1️ Training Isolation Forest (less sensitive)...")
 iso_forest = IsolationForest(
     contamination=0.01,  # Reduced from 0.03
     n_estimators=200,    # More trees for stability
@@ -64,12 +64,12 @@ rf = RandomForestClassifier(
 rf.fit(X_train, y_train_binary)
 pred2_labels = rf.predict(X_test)
 pred2 = [1 if p == 'Normal' else -1 for p in pred2_labels]
-print("   ✅ Random Forest trained")
+print("    Random Forest trained")
 
 # ============================================================================
 # MODEL 3: One-Class SVM (Less Sensitive)
 # ============================================================================
-print("\n3️⃣ Training One-Class SVM (less sensitive)...")
+print("\n3️ Training One-Class SVM (less sensitive)...")
 svm = OneClassSVM(
     kernel='rbf',
     gamma='scale',       # Better than 'auto'
